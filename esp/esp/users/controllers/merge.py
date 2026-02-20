@@ -48,27 +48,33 @@ def get_related(target):
     """
     return _get_simply_related(target) + _get_m2m_related(target)
 
+from django.db import transaction
+
+@transaction.atomic
 def merge(absorber, absorbee):
-    """Transfers everything from absorbee to absorber."""
+    """Transfers everything from absorbee to absorber.
+
+    This operation is wrapped in a single atomic transaction
+    so that either all related data is transferred successfully
+    or everything rolls back on error.
+    """
     for obj, name, m2m in get_related(absorbee):
-        # I could probably be smarter about transaction handling.
-        # Ideally, I'd check for uniqueness constraints *before* saving.
-        # Then I wouldn't have to do any transaction stuff here.
-        with transaction.atomic():
-            if m2m:
-                # TODO: handle symmetric relations.
-                rel = getattr(obj, name)
-                # If it's not auto_created then it's handled by a "through".
-                if rel.through._meta.auto_created:
-                    rel.remove(absorbee)
-                    rel.add(absorber)
-                    # No need to save(); remove and add implicitly do it.
-            else:
-                setattr(obj, name, absorber)
-                obj.save()
-    # Also check local m2m fields.
+        # Handle many-to-many relations
+        if m2m:
+            rel = getattr(obj, name)
+            if rel.through._meta.auto_created:
+                rel.remove(absorbee)
+                rel.add(absorber)
+        else:
+            # Handle ForeignKey or One-to-One relations
+            setattr(obj, name, absorber)
+            obj.save()
+
+    # Also check local many-to-many fields
     for field in absorber._meta.local_many_to_many:
-        getattr(absorber, field.attname).add(getattr(absorbee, field.attname).all())
+        getattr(absorber, field.attname).add(
+            *getattr(absorbee, field.attname).all()
+        )
 
 
 #########################
